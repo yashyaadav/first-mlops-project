@@ -93,7 +93,7 @@ kubectl apply -f k8s-deploy.yml
 
 ## 🙌 Credits
 
-This project is based on the **"Build Your First MLOps Project"** tutorial by [Abhishek Veeramalla](https://github.com/iam-veeramalla) ([original repo](https://github.com/iam-veeramalla/first-mlops-project)). All credit for the original walkthrough goes to him — go check out his YouTube channel `Abhishek.Veeramalla` for great DevOps + MLOps content.
+This project is based on the **"Build Your First MLOps Project"** tutorial by Abhishek Veeramalla. All credit for the original walkthrough goes to him — check out his YouTube channel `Abhishek.Veeramalla` for great DevOps + MLOps content.
 
 I worked through it as my first hands-on MLOps project to learn the model → API → container → Kubernetes pipeline end-to-end.
 
