@@ -3,3 +3,4 @@ uvicorn[standard]
 scikit-learn==1.9.0
 pandas
 joblib
+boto3

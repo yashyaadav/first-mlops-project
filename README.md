@@ -8,6 +8,7 @@ An end-to-end MLOps project I built to learn the workflow of training, serving, 
 - ✅ Dockerization
 - ✅ Kubernetes Deployment
 - ✅ Kubeflow Pipeline (training orchestration)
+- ✅ Closed train → serve loop (pipeline publishes model to seaweedfs; API pulls it on rollout)
 
 ---
 
@@ -155,6 +156,59 @@ deactivate                      # when you're done; reactivate .mlops for servin
 In the KFP UI, click **Upload Pipeline**, select `diabetes_pipeline.yaml`, then create a run. Metrics (accuracy, precision, recall, F1) and the trained model artifact appear in the run view.
 
 ![Kubeflow pipeline run – train-op and evaluate-op completed with model, test_set, and metrics artifacts](docs/kfp-run-success.png)
+
+---
+
+## 🔁 Closing the Train → Serve Loop
+
+Out of the box, the FastAPI image bakes in `diabetes_model.pkl` — useful for `docker run` but not realistic: a new model trained by the pipeline can't reach the serving pods. To close the loop, the pipeline now also uploads the trained model to seaweedfs (S3-compatible, already running in the kubeflow namespace), and the API pulls it on startup when `MODEL_S3_URI` is set.
+
+```
+[KFP train_op] trains model → boto3.upload → s3://mlpipeline/models/diabetes/latest.pkl
+                                                       ↓
+[diabetes-api pods] on startup → boto3.download → joblib.load → serve
+```
+
+### One-time setup: copy the seaweedfs creds into the `default` namespace
+
+The serving deployment lives in `default` but seaweedfs creds live in `kubeflow`. Mirror them:
+
+```
+kubectl create secret generic s3-creds \
+  --from-literal=access-key=minio \
+  --from-literal=secret-key=minio123
+```
+
+(These are the demo creds Kubeflow Pipelines ships with — don't reuse outside a local cluster.)
+
+### Workflow per training run
+
+1. **Run the pipeline in the KFP UI** (or `python kubeflow/pipeline.py` then upload + run). At the end of `train-op` you should see `✅ Uploaded model to s3://mlpipeline/models/diabetes/latest.pkl` in the pod logs.
+2. **Roll out the API** so fresh pods pull the new model on startup:
+   ```
+   kubectl rollout restart deployment diabetes-api
+   kubectl rollout status deployment diabetes-api
+   ```
+3. **Test the new model**:
+   ```
+   kubectl port-forward svc/diabetes-api-service 8000:80
+   curl -X POST http://localhost:8000/predict \
+     -H 'Content-Type: application/json' \
+     -d '{"Pregnancies":2,"Glucose":130,"BloodPressure":70,"BMI":28.5,"Age":45}'
+   ```
+
+### Verifying the model is actually being pulled from S3
+
+```
+kubectl logs deployment/diabetes-api | head -20
+```
+
+You should see no `InconsistentVersionWarning` (the pipeline trains with the same sklearn version the container runs) and the API starts normally. To inspect the object directly:
+
+```
+kubectl exec -n kubeflow deploy/seaweedfs -- \
+  weed shell -filer=seaweedfs:8888 <<<'fs.ls /buckets/mlpipeline/models/diabetes'
+```
 
 ---
 
