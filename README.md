@@ -154,6 +154,8 @@ deactivate                      # when you're done; reactivate .mlops for servin
 
 In the KFP UI, click **Upload Pipeline**, select `diabetes_pipeline.yaml`, then create a run. Metrics (accuracy, precision, recall, F1) and the trained model artifact appear in the run view.
 
+![Kubeflow pipeline run – train-op and evaluate-op completed with model, test_set, and metrics artifacts](docs/kfp-run-success.png)
+
 ---
 
 ## 🙌 Credits
