@@ -192,3 +192,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Project-specific: venvs, compiled pipeline output, trained model
+.mlops/
+.kfp/
+diabetes_model.pkl
+diabetes_pipeline.yaml

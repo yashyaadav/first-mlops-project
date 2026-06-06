@@ -1,179 +1,200 @@
-# 🩺 Diabetes Prediction Model – MLOps Project (FastAPI + Docker + K8s)
+# 🩺 Diabetes Prediction Model – MLOps Project
 
-An end-to-end MLOps project I built to learn the workflow of training, serving, containerizing, and deploying a machine learning model. It predicts whether a person is diabetic based on health metrics, and walks through:
+An end-to-end MLOps walkthrough: train a model locally, serve it with FastAPI, containerize it, deploy to Kubernetes, then promote training to a Kubeflow Pipeline and close the loop so the serving pods pull each new model from object storage.
 
-- ✅ Model Training
-- ✅ Building the Model locally
-- ✅ API Deployment with FastAPI
-- ✅ Dockerization
-- ✅ Kubernetes Deployment
-- ✅ Kubeflow Pipeline (training orchestration)
+The serving model predicts whether a patient is diabetic (Pima Indians dataset) from five health metrics. The ML side is intentionally simple — the point of the project is the **MLOps glue around it**.
+
+- ✅ Model training (local + Kubeflow Pipelines)
+- ✅ FastAPI serving
+- ✅ Dockerized image
+- ✅ Kubernetes deployment (kind for local, manifest for real clusters)
+- ✅ Kubeflow Pipeline (tracked runs, artifacts, metrics)
 - ✅ Closed train → serve loop (pipeline publishes model to seaweedfs; API pulls it on rollout)
 
 ---
 
-## 📊 Problem Statement
+## 🏗️ Architecture
 
-Predict if a person is diabetic based on:
-- Pregnancies
-- Glucose
-- Blood Pressure
-- BMI
-- Age
+Two paths through the same code: a **local dev** path for fast iteration, and a **closed-loop in-cluster** path that's the real MLOps story.
 
-We use a Random Forest Classifier trained on the **Pima Indians Diabetes Dataset**.
+```mermaid
+flowchart TB
+    subgraph LOCAL["💻 Local dev (laptop)"]
+      direction LR
+      L1["python train.py"] -->|joblib.dump| L2["diabetes_model.pkl"]
+      L2 -->|joblib.load| L3["uvicorn main:app"]
+      L3 -->|POST /predict| L4["curl response"]
+    end
+
+    subgraph CLUSTER["☸️ kind cluster"]
+      direction LR
+      subgraph KFP["🔬 kubeflow namespace"]
+        direction TB
+        K1["train-op<br/>(KFP component)"] -->|joblib.dump| K2["KFP Model artifact"]
+        K1 -->|boto3.upload| S[("seaweedfs<br/>s3://mlpipeline/<br/>models/diabetes/latest.pkl")]
+        K2 --> K3["evaluate-op"]
+        K3 --> K4["KFP Metrics<br/>(accuracy, F1, ...)"]
+      end
+      subgraph DEFAULT["📦 default namespace"]
+        direction TB
+        D1["diabetes-api pods"] -->|kubectl rollout restart| D1
+        D1 -->|boto3.download<br/>on startup| D2["/tmp/diabetes_model.pkl"]
+        D2 -->|joblib.load| D3["FastAPI<br/>POST /predict"]
+      end
+      S -.->|cross-ns<br/>NetworkPolicy| D1
+    end
+
+    LOCAL -.->|same code, different<br/>entry points| CLUSTER
+```
 
 ---
 
-## 🚀 Quick Start
+## 📊 Problem statement
 
-### 1. Clone the Repo
+Predict whether a person is diabetic based on:
+
+- Pregnancies, Glucose, Blood Pressure, BMI, Age
+
+Trained on the **Pima Indians Diabetes Dataset** (hosted CSV) with a `RandomForestClassifier`.
+
+---
+
+## 📋 Prerequisites
+
+| Tool | Why |
+|---|---|
+| Python 3.12 | `scikit-learn==1.9.0` requires Python ≥3.11 |
+| Docker Desktop | Build/run the serving image |
+| `kind` ≥ 0.32 | Local Kubernetes cluster |
+| `kubectl` | Talk to the cluster |
+| Kubeflow Pipelines (KFP) | Only needed for the pipeline + closed-loop sections — install in your kind cluster following [kfp docs](https://www.kubeflow.org/docs/components/pipelines/) |
+
+---
+
+## 🚀 Quick Start (local)
 
 ```bash
 git clone https://github.com/yashyaadav/first-mlops-project.git
 cd first-mlops-project
-```
 
-### 2. Create Virtual Environment
-
-```
-python3 -m venv .mlops
+python3.12 -m venv .mlops
 source .mlops/bin/activate
-```
-
-### 3. Install Dependencies
-
-```
+pip install --upgrade pip
 pip install -r requirements.txt
+
+python train.py                   # produces diabetes_model.pkl
+uvicorn main:app --reload         # http://localhost:8000/docs
 ```
 
-## Train the Model
+**Sample request:**
 
-```
-python train.py
-```
-
-## Run the API Locally
-
-```
-uvicorn main:app --reload
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"Pregnancies":2,"Glucose":130,"BloodPressure":70,"BMI":28.5,"Age":45}'
+# → {"diabetic": true}
 ```
 
-### Sample Input for /predict
+---
 
-```
-{
-  "Pregnancies": 2,
-  "Glucose": 130,
-  "BloodPressure": 70,
-  "BMI": 28.5,
-  "Age": 45
-}
-```
+## 🐳 Dockerize
 
-## Dockerize the API
-
-### Build the Docker Image
-
-```
+```bash
 docker build -t diabetes-prediction-model .
-```
-
-### Run the Container
-
-```
 docker run -p 8000:8000 diabetes-prediction-model
 ```
 
-## Deploy to Kubernetes
+The image is `python:3.12-slim` based (~250MB) and falls back to the locally-baked `diabetes_model.pkl` when no `MODEL_S3_URI` env var is set.
 
-For a real cluster (image pushed to a registry, LoadBalancer service):
+---
 
-```
+## ☸️ Deploy to Kubernetes
+
+### Real cluster
+
+Push the image to a registry, then:
+
+```bash
 kubectl apply -f k8s-deploy.yml
 ```
 
-### Try it locally on a kind cluster
+Uses a `LoadBalancer` service — replace the image reference with your registry path first.
 
-`k8s-deploy-kind.yml` uses the locally-built image and a NodePort service so you can run it without a registry or cloud LB. Spin up a cluster, load the image into it, and apply:
+### Local kind cluster
 
-```
-kind create cluster
-kind load docker-image diabetes-prediction-model:latest
+`k8s-deploy-kind.yml` uses the locally-built image and a `NodePort` service, so no registry or cloud LB is needed.
+
+```bash
+kind create cluster --name kubeflow
+kind load docker-image diabetes-prediction-model:latest --name kubeflow
 kubectl apply -f k8s-deploy-kind.yml
 ```
 
 Verify the image landed on the node (kind nodes run containerd, so use `crictl`):
 
-```
-docker exec -it kind-control-plane crictl images | grep diabetes
+```bash
+docker exec -it kubeflow-control-plane crictl images | grep diabetes
 ```
 
-(If you named the cluster, the container is `<cluster-name>-control-plane`.)
+Port-forward and hit it at http://localhost:8000:
 
-Forward the service to your host and hit it at http://localhost:8000:
-
-```
+```bash
 kubectl port-forward svc/diabetes-api-service 8000:80
 ```
 
-Tear down when you're done:
-
-```
-kind delete cluster
-```
+Tear down when done: `kind delete cluster --name kubeflow`.
 
 ---
 
-## 🔬 Kubeflow Pipeline (optional)
+## 🔬 Kubeflow Pipeline
 
-Run training as a tracked Kubeflow Pipeline instead of a one-off `python train.py`. See [kubeflow/](kubeflow/) for the pipeline definition and a longer walkthrough.
+Run training as a tracked Kubeflow Pipeline instead of `python train.py` on your laptop. See [kubeflow/](kubeflow/) for the pipeline source.
 
-Assuming Kubeflow Pipelines is installed in your kind cluster (in the `kubeflow` namespace), port-forward the UI:
+**1. Port-forward the KFP UI:**
 
-```
+```bash
 kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
 ```
 
-Then open http://localhost:8080.
+http://localhost:8080.
 
-Set up a **separate** virtual environment for the KFP SDK (it pulls in ~40 transitive deps you don't want mixing with the FastAPI venv):
+**2. Set up a dedicated venv** for the KFP SDK (~40 transitive deps you don't want mixing with `.mlops`):
 
-```
+```bash
 python3.12 -m venv .kfp
 source .kfp/bin/activate
 pip install --upgrade pip
 pip install -r kubeflow/requirements.txt
 ```
 
-Compile the pipeline:
+**3. Compile the pipeline:**
 
+```bash
+python kubeflow/pipeline.py       # produces diabetes_pipeline.yaml
+deactivate                         # reactivate .mlops when you go back to serving
 ```
-python kubeflow/pipeline.py     # produces diabetes_pipeline.yaml
-deactivate                      # when you're done; reactivate .mlops for serving work
-```
 
-In the KFP UI, click **Upload Pipeline**, select `diabetes_pipeline.yaml`, then create a run. Metrics (accuracy, precision, recall, F1) and the trained model artifact appear in the run view.
+**4. In the KFP UI:**
 
-![Kubeflow pipeline run – train-op and evaluate-op completed with model, test_set, and metrics artifacts](docs/kfp-run-success.png)
+1. **Pipelines → Upload pipeline** → pick `diabetes_pipeline.yaml`, name it `diabetes-pipeline-kubeflow`.
+2. After the first upload, future iterations use **+ Upload version** (not a new pipeline) — give each version a name like `v3-closed-loop`.
+3. **+ Create run**, leave the pipeline params at their defaults (they match the in-cluster seaweedfs), submit.
+
+A successful run produces metrics on `evaluate-op` and uploads the trained model to seaweedfs:
+
+![Kubeflow pipeline run – train-op and evaluate-op both completed with model, test_set, and metrics artifacts](docs/kfp-run-success.png)
 
 ---
 
 ## 🔁 Closing the Train → Serve Loop
 
-Out of the box, the FastAPI image bakes in `diabetes_model.pkl` — useful for `docker run` but not realistic: a new model trained by the pipeline can't reach the serving pods. To close the loop, the pipeline now also uploads the trained model to seaweedfs (S3-compatible, already running in the kubeflow namespace), and the API pulls it on startup when `MODEL_S3_URI` is set.
-
-```
-[KFP train_op] trains model → boto3.upload → s3://mlpipeline/models/diabetes/latest.pkl
-                                                       ↓
-[diabetes-api pods] on startup → boto3.download → joblib.load → serve
-```
+The pipeline uploads each trained model to `s3://mlpipeline/models/diabetes/latest.pkl` (seaweedfs, already running in the kubeflow namespace), and the API container downloads it on startup when `MODEL_S3_URI` is set. After a successful pipeline run, `kubectl rollout restart deployment diabetes-api` pulls the new model into fresh pods.
 
 ### One-time setup
 
-**1. Mirror the seaweedfs creds into the `default` namespace.** The serving deployment lives in `default` but the creds live in `kubeflow`:
+**1. Mirror the seaweedfs credentials into the `default` namespace.** The serving deployment lives in `default` but the secret lives in `kubeflow`:
 
-```
+```bash
 kubectl create secret generic s3-creds \
   --from-literal=access-key=minio \
   --from-literal=secret-key=minio123
@@ -181,46 +202,67 @@ kubectl create secret generic s3-creds \
 
 (These are the demo creds Kubeflow Pipelines ships with — don't reuse outside a local cluster.)
 
-**2. Allow the API pods to reach seaweedfs across namespaces.** Kubeflow's default `seaweedfs` NetworkPolicy blocks ingress from outside the `kubeflow` namespace, which would cause the API to hang at startup trying to download the model. Apply the extra policy:
+**2. Allow the API pods to reach seaweedfs across namespaces.** Kubeflow's default `seaweedfs` NetworkPolicy blocks ingress from outside `kubeflow`, which would otherwise hang the API at startup:
 
-```
+```bash
 kubectl apply -f k8s-allow-api-to-seaweedfs.yml
 ```
 
-### Workflow per training run
+**3. (Re)deploy the API with the env-var wiring from `k8s-deploy-kind.yml`:**
 
-1. **Run the pipeline in the KFP UI** (or `python kubeflow/pipeline.py` then upload + run). At the end of `train-op` you should see `✅ Uploaded model to s3://mlpipeline/models/diabetes/latest.pkl` in the pod logs.
-2. **Roll out the API** so fresh pods pull the new model on startup:
-   ```
-   kubectl rollout restart deployment diabetes-api
-   kubectl rollout status deployment diabetes-api
-   ```
-3. **Test the new model**:
-   ```
-   kubectl port-forward svc/diabetes-api-service 8000:80
-   curl -X POST http://localhost:8000/predict \
-     -H 'Content-Type: application/json' \
-     -d '{"Pregnancies":2,"Glucose":130,"BloodPressure":70,"BMI":28.5,"Age":45}'
-   ```
-
-### Verifying the model is actually being pulled from S3
-
-```
-kubectl logs deployment/diabetes-api | head -20
+```bash
+kubectl apply -f k8s-deploy-kind.yml
 ```
 
-You should see no `InconsistentVersionWarning` (the pipeline trains with the same sklearn version the container runs) and the API starts normally. To inspect the object directly:
+### Per training-run workflow
+
+```bash
+# 1. Run the pipeline (in the KFP UI) → wait until both ops are green
+# 2. Roll out the API so new pods pull the fresh model
+kubectl rollout restart deployment diabetes-api
+kubectl rollout status deployment diabetes-api
+
+# 3. Test
+kubectl port-forward svc/diabetes-api-service 8000:80
+curl -X POST http://localhost:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"Pregnancies":2,"Glucose":130,"BloodPressure":70,"BMI":28.5,"Age":45}'
+```
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `curl: (52) Empty reply from server`; empty pod logs | API hung downloading from seaweedfs — NetworkPolicy not applied | `kubectl apply -f k8s-allow-api-to-seaweedfs.yml` then `kubectl rollout restart deployment diabetes-api` |
+| Pod `CreateContainerConfigError` on `S3_ACCESS_KEY` | `s3-creds` secret missing in `default` ns | Run the `kubectl create secret` from step 1 |
+| Pipeline `train-op` fails with `No matching distribution for scikit-learn==1.9.0` | Component base image is pre-3.11 Python | Pipeline already uses `python:3.12-slim`; recompile `pipeline.py` if you edited it |
+| `InconsistentVersionWarning` on API startup | sklearn version drift between training and serving | Both are pinned to 1.9.0 — rebuild + reload the serving image |
+
+---
+
+## 📁 Project layout
 
 ```
-kubectl exec -n kubeflow deploy/seaweedfs -- \
-  weed shell -filer=seaweedfs:8888 <<<'fs.ls /buckets/mlpipeline/models/diabetes'
+.
+├── train.py                       Local training: pulls CSV, trains RF, dumps pkl
+├── main.py                        FastAPI app; loads model from S3 if MODEL_S3_URI set, else local pkl
+├── requirements.txt               Serving deps (fastapi, sklearn, boto3, ...)
+├── Dockerfile                     python:3.12-slim + uvicorn entrypoint
+├── k8s-deploy.yml                 Deployment + LoadBalancer Service (real cluster)
+├── k8s-deploy-kind.yml            Deployment + NodePort Service + S3 env vars (local kind)
+├── k8s-allow-api-to-seaweedfs.yml NetworkPolicy: lets API in `default` reach seaweedfs in `kubeflow`
+├── kubeflow/
+│   ├── pipeline.py                KFP v2 pipeline: train_op (+ S3 upload) → evaluate_op
+│   ├── requirements.txt           kfp SDK
+│   └── README.md                  Pipeline-specific walkthrough
+└── docs/
+    └── kfp-run-success.png        Screenshot of a successful KFP run
 ```
 
 ---
 
 ## 🙌 Credits
 
-This project is based on the **"Build Your First MLOps Project"** tutorial by Abhishek Veeramalla. All credit for the original walkthrough goes to him — check out his YouTube channel `Abhishek.Veeramalla` for great DevOps + MLOps content.
+This project started from the **"Build Your First MLOps Project"** tutorial by Abhishek Veeramalla — check out his YouTube channel `Abhishek.Veeramalla` for great DevOps + MLOps content.
 
-I worked through it as my first hands-on MLOps project to learn the model → API → container → Kubernetes pipeline end-to-end.
-
+I extended it with the Kubeflow Pipelines integration and the closed train → serve loop as a hands-on learning exercise.
