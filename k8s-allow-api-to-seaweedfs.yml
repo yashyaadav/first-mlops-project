@@ -1,0 +1,26 @@
+# Allows the diabetes-api pods (in the `default` namespace) to reach
+# seaweedfs's S3 port (8333) in the `kubeflow` namespace. Without this,
+# Kubeflow's default seaweedfs NetworkPolicy blocks cross-namespace
+# traffic, the API hangs on `boto3.download_file()` at startup, uvicorn
+# never binds its port, and curl gets "Empty reply from server".
+#
+# Apply once, after `kubectl apply -f k8s-deploy-kind.yml`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-default-to-seaweedfs
+  namespace: kubeflow
+spec:
+  podSelector:
+    matchLabels:
+      app: seaweedfs
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 8333

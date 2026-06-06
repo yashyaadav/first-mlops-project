@@ -169,9 +169,9 @@ Out of the box, the FastAPI image bakes in `diabetes_model.pkl` — useful for `
 [diabetes-api pods] on startup → boto3.download → joblib.load → serve
 ```
 
-### One-time setup: copy the seaweedfs creds into the `default` namespace
+### One-time setup
 
-The serving deployment lives in `default` but seaweedfs creds live in `kubeflow`. Mirror them:
+**1. Mirror the seaweedfs creds into the `default` namespace.** The serving deployment lives in `default` but the creds live in `kubeflow`:
 
 ```
 kubectl create secret generic s3-creds \
@@ -180,6 +180,12 @@ kubectl create secret generic s3-creds \
 ```
 
 (These are the demo creds Kubeflow Pipelines ships with — don't reuse outside a local cluster.)
+
+**2. Allow the API pods to reach seaweedfs across namespaces.** Kubeflow's default `seaweedfs` NetworkPolicy blocks ingress from outside the `kubeflow` namespace, which would cause the API to hang at startup trying to download the model. Apply the extra policy:
+
+```
+kubectl apply -f k8s-allow-api-to-seaweedfs.yml
+```
 
 ### Workflow per training run
 
