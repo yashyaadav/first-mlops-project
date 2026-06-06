@@ -7,6 +7,7 @@ An end-to-end MLOps project I built to learn the workflow of training, serving, 
 - ✅ API Deployment with FastAPI
 - ✅ Dockerization
 - ✅ Kubernetes Deployment
+- ✅ Kubeflow Pipeline (training orchestration)
 
 ---
 
@@ -101,6 +102,14 @@ kind load docker-image diabetes-prediction-model:latest
 kubectl apply -f k8s-deploy-kind.yml
 ```
 
+Verify the image landed on the node (kind nodes run containerd, so use `crictl`):
+
+```
+docker exec -it kind-control-plane crictl images | grep diabetes
+```
+
+(If you named the cluster, the container is `<cluster-name>-control-plane`.)
+
 Forward the service to your host and hit it at http://localhost:8000:
 
 ```
@@ -112,6 +121,29 @@ Tear down when you're done:
 ```
 kind delete cluster
 ```
+
+---
+
+## 🔬 Kubeflow Pipeline (optional)
+
+Run training as a tracked Kubeflow Pipeline instead of a one-off `python train.py`. See [kubeflow/](kubeflow/) for the pipeline definition and a longer walkthrough.
+
+Assuming Kubeflow Pipelines is installed in your kind cluster (in the `kubeflow` namespace), port-forward the UI:
+
+```
+kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
+```
+
+Then open http://localhost:8080.
+
+Compile and upload the pipeline:
+
+```
+pip install -r kubeflow/requirements.txt
+python kubeflow/pipeline.py     # produces diabetes_pipeline.yaml
+```
+
+In the KFP UI, click **Upload Pipeline**, select `diabetes_pipeline.yaml`, then create a run. Metrics (accuracy, precision, recall, F1) and the trained model artifact appear in the run view.
 
 ---
 
