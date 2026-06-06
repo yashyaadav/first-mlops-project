@@ -11,7 +11,7 @@ from kfp import dsl, compiler
 
 
 @dsl.component(
-    base_image="python:3.10-slim",
+    base_image="python:3.12-slim",
     packages_to_install=[
         "scikit-learn==1.9.0",
         "pandas==2.2.3",
@@ -44,7 +44,7 @@ def train_op(
 
 
 @dsl.component(
-    base_image="python:3.10-slim",
+    base_image="python:3.12-slim",
     packages_to_install=[
         "scikit-learn==1.9.0",
         "pandas==2.2.3",
