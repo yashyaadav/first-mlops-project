@@ -136,11 +136,20 @@ kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
 
 Then open http://localhost:8080.
 
-Compile and upload the pipeline:
+Set up a **separate** virtual environment for the KFP SDK (it pulls in ~40 transitive deps you don't want mixing with the FastAPI venv):
 
 ```
+python3.12 -m venv .kfp
+source .kfp/bin/activate
+pip install --upgrade pip
 pip install -r kubeflow/requirements.txt
+```
+
+Compile the pipeline:
+
+```
 python kubeflow/pipeline.py     # produces diabetes_pipeline.yaml
+deactivate                      # when you're done; reactivate .mlops for serving work
 ```
 
 In the KFP UI, click **Upload Pipeline**, select `diabetes_pipeline.yaml`, then create a run. Metrics (accuracy, precision, recall, F1) and the trained model artifact appear in the run view.

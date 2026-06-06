@@ -14,12 +14,22 @@ Serving (FastAPI + Docker + the k8s manifests in the project root) is unchanged 
 
 ## Compile
 
+Use a **separate** virtual environment from the serving/FastAPI one — the `kfp` SDK pulls in many transitive deps (kubernetes, protobuf, grpc, ...) that you don't want polluting `.mlops`.
+
+From the project root:
+
 ```
-pip install -r requirements.txt
-python pipeline.py
+python3.12 -m venv .kfp
+source .kfp/bin/activate
+pip install --upgrade pip
+pip install -r kubeflow/requirements.txt
+
+python kubeflow/pipeline.py     # produces diabetes_pipeline.yaml
+
+deactivate                       # when done
 ```
 
-Produces `diabetes_pipeline.yaml` (gitignored).
+The compiled `diabetes_pipeline.yaml` is gitignored.
 
 ## Run
 
