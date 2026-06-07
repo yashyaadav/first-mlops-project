@@ -49,6 +49,51 @@ flowchart TB
 
 ---
 
+## 🔄 MLOps Lifecycle
+
+How the classic MLOps lifecycle stages map onto concrete pieces of this repo. The grey edges back from **Serve** are the iteration loops: a new model triggers a rollout, a drift signal (out of scope here) triggers retraining.
+
+```mermaid
+flowchart LR
+    classDef done fill:#e6f4ea,stroke:#137333,color:#137333
+    classDef stub fill:#fef7e0,stroke:#b06000,color:#b06000
+    classDef todo fill:#fce8e6,stroke:#a50e0e,color:#a50e0e
+
+    D["📊 Data<br/>Pima Indians CSV<br/><i>hosted dataset URL</i>"]
+    T["🧠 Train<br/>train.py · pipeline.py:train_op<br/><i>RandomForestClassifier</i>"]
+    E["📈 Evaluate<br/>pipeline.py:evaluate_op<br/><i>accuracy, precision, recall, F1</i>"]
+    R["💾 Register<br/>boto3 upload in train_op<br/><i>s3://mlpipeline/models/diabetes/latest.pkl</i>"]
+    P["📦 Package<br/>Dockerfile<br/><i>python:3.12-slim · ~250MB</i>"]
+    DP["🚀 Deploy<br/>k8s-deploy-kind.yml<br/><i>kubectl apply · rollout restart</i>"]
+    S["🌐 Serve<br/>main.py + FastAPI<br/><i>boto3 download on startup · POST /predict</i>"]
+    M["👀 Monitor / retrain<br/><i>manual rollout for now;<br/>no drift detection, no CI/CD</i>"]
+
+    D --> T --> E --> R --> S
+    P --> DP --> S
+    S -.->|new model published| DP
+    S -.->|drift / new data| T
+
+    class D,T,E,R,P,DP,S done
+    class M stub
+```
+
+**Status per stage:**
+
+| # | Stage | Implementation | Status |
+|---|---|---|---|
+| 1 | Data | Hosted Pima Indians CSV (`plotly/datasets`) | ✅ |
+| 2 | Train | `train.py` locally, or `kubeflow/pipeline.py:train_op` in KFP | ✅ |
+| 3 | Evaluate | `kubeflow/pipeline.py:evaluate_op` logs metrics as KFP artifacts | ✅ |
+| 4 | Register | `boto3.upload_file` to seaweedfs inside `train_op` | ✅ |
+| 5 | Package | `Dockerfile` builds `diabetes-prediction-model:latest` | ✅ |
+| 6 | Deploy | `k8s-deploy-kind.yml` (NodePort) + `k8s-deploy.yml` (LB for real clusters) | ✅ |
+| 7 | Serve | `main.py` + FastAPI; pulls model from S3 on startup if `MODEL_S3_URI` set | ✅ |
+| 8 | Monitor / retrain trigger | Manual `kubectl rollout restart` after pipeline runs | ⚠️ stub |
+| 9 | CI/CD | Not implemented | ❌ |
+| 10 | Drift detection / shadow eval | Not implemented | ❌ |
+
+---
+
 ## 📊 Problem statement
 
 Predict whether a person is diabetic based on:
