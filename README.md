@@ -64,17 +64,17 @@ flowchart LR
     E["📈 Evaluate<br/>pipeline.py:evaluate_op<br/><i>accuracy, precision, recall, F1</i>"]
     R["💾 Register<br/>boto3 upload in train_op<br/><i>s3://mlpipeline/models/diabetes/latest.pkl</i>"]
     P["📦 Package<br/>Dockerfile<br/><i>python:3.12-slim · ~250MB</i>"]
-    DP["🚀 Deploy<br/>k8s-deploy-kind.yml<br/><i>kubectl apply · rollout restart</i>"]
+    DP["🚀 Deploy<br/>k8s-deploy-kind.yml<br/><i>kubectl apply</i>"]
+    AR["🔁 Auto-rollout<br/>pipeline.py:deploy_op<br/><i>kubernetes client patch · restartedAt annotation</i>"]
     S["🌐 Serve<br/>main.py + FastAPI<br/><i>boto3 download on startup · POST /predict</i>"]
-    M["👀 Monitor / retrain<br/><i>manual rollout for now;<br/>no drift detection, no CI/CD</i>"]
+    M["👀 Monitor / drift detection<br/><i>not implemented;<br/>no shadow eval, no CI/CD</i>"]
 
-    D --> T --> E --> R --> S
+    D --> T --> E --> R --> AR --> S
     P --> DP --> S
-    S -.->|new model published| DP
     S -.->|drift / new data| T
 
-    class D,T,E,R,P,DP,S done
-    class M stub
+    class D,T,E,R,P,DP,AR,S done
+    class M todo
 ```
 
 **Status per stage:**
@@ -88,7 +88,7 @@ flowchart LR
 | 5 | Package | `Dockerfile` builds `diabetes-prediction-model:latest` | ✅ |
 | 6 | Deploy | `k8s-deploy-kind.yml` (NodePort) + `k8s-deploy.yml` (LB for real clusters) | ✅ |
 | 7 | Serve | `main.py` + FastAPI; pulls model from S3 on startup if `MODEL_S3_URI` set | ✅ |
-| 8 | Monitor / retrain trigger | Manual `kubectl rollout restart` after pipeline runs | ⚠️ stub |
+| 8 | Auto-rollout (deploy trigger) | `kubeflow/pipeline.py:deploy_op` patches the Deployment's `restartedAt` annotation via the k8s API at the end of every pipeline run | ✅ |
 | 9 | CI/CD | Not implemented | ❌ |
 | 10 | Drift detection / shadow eval | Not implemented | ❌ |
 
@@ -233,7 +233,13 @@ A successful run produces metrics on `evaluate-op` and uploads the trained model
 
 ## 🔁 Closing the Train → Serve Loop
 
-The pipeline uploads each trained model to `s3://mlpipeline/models/diabetes/latest.pkl` (seaweedfs, already running in the kubeflow namespace), and the API container downloads it on startup when `MODEL_S3_URI` is set. After a successful pipeline run, `kubectl rollout restart deployment diabetes-api` pulls the new model into fresh pods.
+The pipeline has three components in series:
+
+1. `train_op` trains a `RandomForestClassifier`, joblib-dumps it as a KFP `Model` artifact, **and** uploads it to `s3://mlpipeline/models/diabetes/latest.pkl` on seaweedfs.
+2. `evaluate_op` loads the model + held-out test set and logs `accuracy`, `precision`, `recall`, `f1` as KFP `Metrics`.
+3. `deploy_op` patches the `diabetes-api` Deployment's `restartedAt` annotation via the in-cluster Kubernetes API, triggering a rolling restart. Fresh pods read `MODEL_S3_URI` and download the new model on startup.
+
+End result: **one successful pipeline run = new model on every API pod, no human in the loop**.
 
 ### One-time setup
 
@@ -253,7 +259,13 @@ kubectl create secret generic s3-creds \
 kubectl apply -f k8s-allow-api-to-seaweedfs.yml
 ```
 
-**3. (Re)deploy the API with the env-var wiring from `k8s-deploy-kind.yml`:**
+**3. Grant the pipeline permission to roll out the Deployment.** `deploy_op` runs as the `pipeline-runner` ServiceAccount in `kubeflow`; it needs `patch` on the `diabetes-api` Deployment in `default`:
+
+```bash
+kubectl apply -f k8s-pipeline-rbac.yml
+```
+
+**4. (Re)deploy the API with the env-var wiring from `k8s-deploy-kind.yml`:**
 
 ```bash
 kubectl apply -f k8s-deploy-kind.yml
@@ -262,9 +274,11 @@ kubectl apply -f k8s-deploy-kind.yml
 ### Per training-run workflow
 
 ```bash
-# 1. Run the pipeline (in the KFP UI) → wait until both ops are green
-# 2. Roll out the API so new pods pull the fresh model
-kubectl rollout restart deployment diabetes-api
+# 1. Run the pipeline in the KFP UI → wait until train-op, evaluate-op,
+#    AND deploy-op are all green. deploy-op logs:
+#      ✅ Triggered rollout of default/diabetes-api at <timestamp>
+
+# 2. Confirm the rollout completed (optional — happens automatically)
 kubectl rollout status deployment diabetes-api
 
 # 3. Test
@@ -280,6 +294,8 @@ curl -X POST http://localhost:8000/predict \
 |---|---|---|
 | `curl: (52) Empty reply from server`; empty pod logs | API hung downloading from seaweedfs — NetworkPolicy not applied | `kubectl apply -f k8s-allow-api-to-seaweedfs.yml` then `kubectl rollout restart deployment diabetes-api` |
 | Pod `CreateContainerConfigError` on `S3_ACCESS_KEY` | `s3-creds` secret missing in `default` ns | Run the `kubectl create secret` from step 1 |
+| `deploy-op` fails with `HTTP 403 Forbidden` | Pipeline RBAC missing | `kubectl apply -f k8s-pipeline-rbac.yml` |
+| `deploy-op` fails with `HTTP 404 Not Found` | `diabetes-api` Deployment doesn't exist in `default` ns | Apply `k8s-deploy-kind.yml` before re-running the pipeline |
 | Pipeline `train-op` fails with `No matching distribution for scikit-learn==1.9.0` | Component base image is pre-3.11 Python | Pipeline already uses `python:3.12-slim`; recompile `pipeline.py` if you edited it |
 | `InconsistentVersionWarning` on API startup | sklearn version drift between training and serving | Both are pinned to 1.9.0 — rebuild + reload the serving image |
 
@@ -296,8 +312,9 @@ curl -X POST http://localhost:8000/predict \
 ├── k8s-deploy.yml                 Deployment + LoadBalancer Service (real cluster)
 ├── k8s-deploy-kind.yml            Deployment + NodePort Service + S3 env vars (local kind)
 ├── k8s-allow-api-to-seaweedfs.yml NetworkPolicy: lets API in `default` reach seaweedfs in `kubeflow`
+├── k8s-pipeline-rbac.yml          Role + RoleBinding: lets pipeline-runner patch diabetes-api
 ├── kubeflow/
-│   ├── pipeline.py                KFP v2 pipeline: train_op (+ S3 upload) → evaluate_op
+│   ├── pipeline.py                KFP v2 pipeline: train_op → evaluate_op → deploy_op (auto-rollout)
 │   ├── requirements.txt           kfp SDK
 │   └── README.md                  Pipeline-specific walkthrough
 └── docs/

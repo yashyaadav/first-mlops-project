@@ -91,9 +91,56 @@ def evaluate_op(
     metrics.log_metric("f1", float(f1_score(y_test, y_pred)))
 
 
+@dsl.component(
+    base_image="python:3.12-slim",
+    packages_to_install=["kubernetes==30.1.0"],
+)
+def deploy_op(
+    deployment_name: str,
+    deployment_namespace: str,
+):
+    """Trigger a rolling restart of the serving Deployment so its pods
+    re-download the newly-uploaded model from seaweedfs on startup.
+
+    Uses the in-cluster Kubernetes API directly (no kubectl binary
+    needed). The pipeline-runner ServiceAccount needs `patch` on
+    `apps/deployments` in the target namespace — see
+    k8s-pipeline-rbac.yml.
+    """
+    from datetime import datetime, timezone
+    from kubernetes import client, config
+
+    config.load_incluster_config()
+    apps_v1 = client.AppsV1Api()
+
+    restarted_at = datetime.now(timezone.utc).isoformat()
+    patch = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": restarted_at,
+                    }
+                }
+            }
+        }
+    }
+    apps_v1.patch_namespaced_deployment(
+        name=deployment_name,
+        namespace=deployment_namespace,
+        body=patch,
+    )
+    print(
+        f"✅ Triggered rollout of {deployment_namespace}/{deployment_name} at {restarted_at}"
+    )
+
+
 @dsl.pipeline(
     name="diabetes-prediction-pipeline",
-    description="Train, evaluate, and publish a RandomForest diabetes classifier to seaweedfs.",
+    description=(
+        "Train, evaluate, publish a RandomForest diabetes classifier to "
+        "seaweedfs, then auto-rollout the serving Deployment."
+    ),
 )
 def diabetes_pipeline(
     data_url: str = "https://raw.githubusercontent.com/plotly/datasets/master/diabetes.csv",
@@ -102,6 +149,8 @@ def diabetes_pipeline(
     s3_key: str = "models/diabetes/latest.pkl",
     s3_access_key: str = "minio",
     s3_secret_key: str = "minio123",
+    deployment_name: str = "diabetes-api",
+    deployment_namespace: str = "default",
 ):
     train_task = train_op(
         data_url=data_url,
@@ -111,10 +160,14 @@ def diabetes_pipeline(
         s3_access_key=s3_access_key,
         s3_secret_key=s3_secret_key,
     )
-    evaluate_op(
+    evaluate_task = evaluate_op(
         model=train_task.outputs["model"],
         test_set=train_task.outputs["test_set"],
     )
+    deploy_op(
+        deployment_name=deployment_name,
+        deployment_namespace=deployment_namespace,
+    ).after(evaluate_task)
 
 
 if __name__ == "__main__":

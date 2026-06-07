@@ -1,0 +1,32 @@
+# Grants the KFP `pipeline-runner` ServiceAccount in the `kubeflow`
+# namespace permission to patch the diabetes-api Deployment in the
+# `default` namespace, so the pipeline's deploy_op can trigger a
+# rolling restart at the end of each run.
+#
+# Without this, deploy_op fails with HTTP 403 from the Kubernetes API.
+#
+# Apply once, after `kubectl apply -f k8s-deploy-kind.yml`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: diabetes-api-deployer
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["diabetes-api"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-runner-can-deploy-diabetes-api
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: kubeflow
+roleRef:
+  kind: Role
+  name: diabetes-api-deployer
+  apiGroup: rbac.authorization.k8s.io
